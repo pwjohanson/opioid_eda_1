@@ -1,0 +1,176 @@
+---
+title: "Opioids"
+output: html_document
+date: "2025-06-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(tidyverse)
+prescriptions <- read_csv("https://raw.githubusercontent.com/36-SURE/2025/main/data/prescriptions.csv")
+# dim(prescriptions)
+glimpse(prescriptions)
+```
+
+```{r}
+opioid_clean <- prescriptions |> 
+  filter(OpioidFlag == "Opioid") |> 
+  drop_na(NumberClaims, Number30DayFills, NumberDaysSupply, 
+          TotalDrugCost, NumberMedicareBeneficiaries)
+
+#PCA
+opioid_features <- opioid_clean |> 
+  select(NumberClaims, Number30DayFills, NumberDaysSupply, 
+         TotalDrugCost, NumberMedicareBeneficiaries)
+
+opioid_pca <- prcomp(opioid_features, center = TRUE, scale. = TRUE)
+pc_matrix <- opioid_pca$x
+
+opioid_data_with_pcs <- opioid_clean |> 
+  mutate(pc1 = pc_matrix[,1], 
+         pc2 = pc_matrix[,2])
+
+ggplot(opioid_data_with_pcs, aes(x = pc1, y = pc2)) +
+  geom_point(alpha = 0.3) +
+  labs(title = "PCA of Opioid Prescriptions", x = "PC1", y = "PC2")
+
+```
+
+```{r}
+# Making PCs interpretable with biplots
+library(factoextra)
+
+fviz_pca_biplot(opioid_pca,
+                label = "var",         
+                alpha.ind = 0.25,      
+                alpha.var = 0.75,      
+                labelsize = 5,
+                col.var = "darkblue",  
+                repel = TRUE)         
+
+
+# Elbow plot
+fviz_eig(opioid_pca, addlabels = TRUE) +
+  geom_hline(
+    yintercept = 100 * (1 / ncol(opioid_pca$x)),  
+    linetype = "dashed",
+    color = "darkred"
+  ) 
+```
+
+
+### K-MEANS CLUSTERING
+```{r}
+opioid_clean <- prescriptions |> 
+  filter(OpioidFlag == "Opioid") |> 
+  drop_na(NumberClaims, Number30DayFills, NumberDaysSupply, 
+          TotalDrugCost, NumberMedicareBeneficiaries)
+
+# Scale/ Standardize
+opioid_clean <- opioid_clean |> 
+  mutate(
+    std_claims = as.numeric(scale(NumberClaims, center = TRUE, scale = TRUE)),
+    std_fills = as.numeric(scale(Number30DayFills, center = TRUE, scale = TRUE)),
+    std_days = as.numeric(scale(NumberDaysSupply, center = TRUE, scale = TRUE)),
+    std_cost = as.numeric(scale(TotalDrugCost, center = TRUE, scale = TRUE)),
+    std_beneficiaries = as.numeric(scale(NumberMedicareBeneficiaries, center = TRUE, scale = TRUE))
+  )
+
+opioid_kmeans <- opioid_clean |> 
+  select(std_claims, std_fills, std_days, std_cost, std_beneficiaries) |> 
+  kmeans(centers = 4, algorithm = "Lloyd", nstart = 25)
+
+opioid_clean <- opioid_clean |> 
+  mutate(cluster = as.factor(opioid_kmeans$cluster))
+
+opioid_scaled_data <- opioid_clean |> 
+  select(std_claims, std_fills, std_days, std_cost, std_beneficiaries)
+
+fviz_cluster(opioid_kmeans,
+             data = opioid_scaled_data,
+             geom = "point",
+             ellipse = FALSE) +
+  ggthemes::scale_color_colorblind()
+```
+
+
+## Elbow plot 
+```{r}
+# Create scaled data matrix (if not already done)
+opioid_scaled_data <- opioid_clean |> 
+  select(std_claims, std_fills, std_days, std_cost, std_beneficiaries)
+
+# Compute total within-cluster sum of squares for different values of k
+wss <- map_dbl(1:10, function(k) {
+  kmeans(opioid_scaled_data, centers = k, nstart = 25)$tot.withinss
+})
+
+# Plot elbow plot
+elbow_df <- tibble(k = 1:10, wss = wss)
+
+ggplot(elbow_df, aes(x = k, y = wss)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Elbow Plot for Optimal Number of Clusters (k)",
+    x = "Number of Clusters (k)",
+    y = "Total Within-Cluster Sum of Squares"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+# Summary of data by cluster 
+opioid_clean |> 
+  group_by(cluster) |> 
+  summarise(
+    avg_claims = mean(NumberClaims),
+    avg_fills = mean(Number30DayFills),
+    avg_days = mean(NumberDaysSupply),
+    avg_cost = mean(TotalDrugCost),
+    avg_beneficiaries = mean(NumberMedicareBeneficiaries),
+    count = n()
+  )
+```
+
+```{r}
+# Cluster Boxplots
+
+# Add cluster info to opioid_clean 
+opioid_clean <- opioid_clean |>
+  mutate(cluster = factor(opioid_kmeans$cluster))
+
+# Pivot data
+opioid_long <- opioid_clean |>
+  select(cluster, NumberClaims, Number30DayFills, NumberDaysSupply, TotalDrugCost, NumberMedicareBeneficiaries) |>
+  pivot_longer(
+    cols = -cluster,
+    names_to = "Variable",
+    values_to = "Value"
+  )
+
+# Faceted boxplots 
+ggplot(opioid_long, aes(x = cluster, y = Value, fill = cluster)) +
+  geom_boxplot(outlier.shape = NA) +  # hide outliers 
+  scale_y_log10() +  
+  facet_wrap(~ Variable, scales = "free_y") +
+  labs(
+    title = "Boxplots of Opioid Prescription Variables by Cluster",
+    x = "Cluster",
+    y = "Value (log scale)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+
+
+
